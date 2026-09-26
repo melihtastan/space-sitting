@@ -123,13 +123,17 @@ overlay **sadece son çağrının** (1 draw call, 2 üçgen) sayısını göster
 - `dirFrom(az, el)`: **az > 0 = ekranın sağı**, `el` = yükseklik derecesi.
   Formül: `(-cos(el)·sin(az), sin(el), cos(el)·cos(az))`. X işaretinin eksi
   olması kasıtlı — kamera +Z'ye bakarken ekranın sağı −X'tir.
-- Kameranın `head.baseYaw = 180` derece. Yani `yaw = 0` iken baktığı yön **+Z**.
-  `dirFrom`'un sıfır yönü de +Z. **İkisinden birini değiştirip diğerini
-  bırakma**, yoksa tüm kompozisyon 180° döner.
+- **Bir azimut `az`'a bakmak için** kameranın `rotation.y` değeri **`π − az`**
+  (radyan), `rotation.x = el`. Bu formülü ayrı ayrı yazma, `dirFrom(az, el)`
+  çağırıp hedef nokta üret. (Bu işaret bir kez ters kuruldu ve galaksi beklenen
+  yerde değil, aynada göründü.)
 - Fare yönü: `head.yaw -= dx * sensitivity`. `movementX > 0` (fare sağa) bakışı
-  **sağa** çevirmeli. `rotation.y = 180 + yaw` yukarıdan bakışta saat yönünün
+  **sağa** çevirmeli. `rotation.y = a + yaw` yukarıdan bakışta saat yönünün
   tersine döndüğü için işaret negatiftir. Bu işaret bir kez ters döndü, düzeltildi.
 - Dikey: `head.pitch -= dy`, negatif pitch = aşağı bakmak.
+- Sandalye açısı `seatAngle(i) = i · 2π / CFG.multi.seats`; sandalyenin dünya
+  yönü bu açıdır, kameranın yaw'ı `seatAngle(i) + head.yaw`. Sabit `baseYaw`
+  **yok** — dört sandalyeye oturulabilmesi bu yüzden şart.
 
 ### 3.7 Dünya yükseklikleri birbirine bağlı
 
@@ -205,6 +209,40 @@ türet.
 - Point ışıklar gölge atmaz, geometrinin içinden geçer. Masa altı LED'i
   y=0.44'te duruyor ve masanın içinden de aydınlatıyor — kasıtlı.
 
+### 3.12 Çok oyunculu katman
+
+- **Durum:** `appState.mode` yalnızca `lobby` veya `seated`. Lobi'de
+  `PARTS.props.visible = false` (masa/platform/sandalyeler gizli) ve kamera
+  `CFG.multi.lobby` konumundan galaksiye bakar. `seated`'e geçiş
+  `tweenCameraTo()` ile 2.6 sn'de; bu sırada `look()` yok sayılır.
+- **Ağ tek arayüzde:** `Net = { load, join, leave, push }`. Sahne kodu başka
+  bir şey bilmez. Sunucuya taşımak için sadece `Net`'i yeniden yaz.
+- **Kütüphane dinamik import ile gelir:** `import(CFG.multi.lib)`. Yükleme
+  başarısız olursa `Net.error` dolar ve `seatSolo()` çağrılır — oyun tek
+  kişilik devam eder. Bu yüzden **ağ kodunun etrafında `try/catch` ve
+  `setTimeout` yoksa sayfa patlamaz.**
+- **Oda anahtarı:** `roomHash(ada + ' ' + şifre)`. Bu bir hash'tir, şifreleme
+  değildir; anahtar halka açık rölde görülebilir.
+- **Sandalye dağıtımı çakışmasızdır ama iki aşamalıdır:** `resolveSeats()`
+  katılımcıları peer id'sine göre sıralar, en boş sandalyeyi ilkine, sonrakine
+  verir. Eşler henüz tanımadığında geçici olarak aynı sandalye verilebilir;
+  durum mesajları gelince `resolveSeats()` yeniden çalışır ve **id'si büyük olan
+  çekilir**. Bu yüzden avatar yer değiştirmesi normaldir, hata değildir.
+- **El sıkışma (handshake) penceresi 6 sn'dir** (`CFG.multi.handshakeMs`).
+  Röle soğuk bağlantısı 2–5 sn sürebilir; 1.7 sn'lik bir pencere **yanlış şifre**
+  sanıyordu. Süreyi kısaltma.
+- **`seatUp()` yalnızca `role === 'create'` ya da `handshakeOk` iken
+  çağrılabilir.** Aksi halde yanlış şifreli katılımcı sandalye alıp oturuyor.
+- **Avatar güncellemesi iki yerden gelir:** `bindAvatars()` sandalye→emoji
+  eşlemesini kurar, `updateAvatars()` her karede konum/billboard/bakış yönünü
+  hesaplar. Slot'a yazarken **mutlaka `.seat` alanını da yaz** — `avatarForSeat()`
+  ile sıfırdan sonra aramak hiçbir şey bulamaz (bu hata yaşandı).
+- **Bakış yönü iki yerden gönderilir:** `loop()` içinde 10 Hz kalp atışı ve
+  `look()` içinde 45 ms kısıtlı anlık gönderim. Arka plandaki sekmenin rAF'i
+  kısıldığı için kalp atışına güvenmek yetmez.
+- Emoji dokusu `emojiTexture(ch)` ile önbelleklenir; 42 gliflik listeden seçilir,
+  serbest metin yok (fontta yoksa kutu çizer).
+
 ---
 
 ## 4. YAPMA listesi
@@ -225,6 +263,10 @@ Bunlar fiilen yapıldı, geri alındı ve tekrar yapılırsa aynı sonucu verir:
 | Kabuk sweep'inde twist eklemeden bırakmak | Sırtlık düz plaka gibi görünür | `twistFn` ≈ 0.44 rad |
 | `Math.random()` | `asamalar/` anlık görüntüleri tutmaz | §3.9 |
 | Galaksiye `lookAt` uygulayıp `rotation` ile tilt vermek | `lookAt` quaternion'ı ezdiği için tilt kaybolur | tilt'i iç grupta ver |
+| Lobi yaw'ını `az - π` yazmak | Kamera aynada bakar, galaksi yanlış yerde | `π - az` (§3.6) |
+| Slot'ları sıfırlayıp `avatarForSeat()` ile aramak | Avatar hiç bağlanmaz | `.seat` alanını doğrudan yaz (§3.12) |
+| Handshake'i 1–2 sn tutmak | Soğuk röle bağlantısında "şifre yanlış" | 6 sn (§3.12) |
+| `resolveSeats()` her koşulda `seatUp()` çağırmak | Yanlış şifreli katılımcı oturur | `create` veya `handshakeOk` şartı |
 
 ---
 
