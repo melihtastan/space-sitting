@@ -7,6 +7,9 @@ gir, boş sandalyeye otur, birbirinizi gör.
 Klasörü çift tıkla, `index.html` tarayıcıda açılır. Build yok, sunucu yok, paket
 yöneticisi yok — tek istisna: three.js CDN'den.
 
+**Çevrimiçi:** <https://melihtastan.github.io/space-sitting/> (GitHub Pages).
+Başkalarıyla paylaşmak istediğin adres bu.
+
 ## Çalıştırma
 
 `index.html` dosyasına çift tıklayın. İnternet bağlantısı gerekir.
