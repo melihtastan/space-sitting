@@ -6,3 +6,8 @@ Thumbs.db
 *.bak
 .vscode/
 .idea/
+
+# yerel test/kok betikleri
+oc-*.js
+_nettest*.html
+
