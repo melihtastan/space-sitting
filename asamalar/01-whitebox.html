@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Uzay Ada — Whitebox 01</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #scene { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+
+  #stats {
+    position: fixed; top: 10px; left: 10px; z-index: 10;
+    padding: 8px 10px 9px;
+    background: rgba(10, 11, 13, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    color: #d8dade;
+    font-size: 11px; line-height: 1.55;
+    letter-spacing: 0.02em;
+    user-select: none; pointer-events: none;
+    backdrop-filter: blur(2px);
+  }
+  #stats .title { color: #8b9096; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+  #stats .row { display: flex; justify-content: space-between; gap: 14px; min-width: 148px; }
+  #stats .k { color: #8b9096; }
+  #stats .v { color: #f2f4f6; font-variant-numeric: tabular-nums; }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    z-index: 10; padding: 7px 14px;
+    background: rgba(10, 11, 13, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 999px;
+    color: #c9ccd1; font-size: 11px; letter-spacing: 0.03em;
+    user-select: none; pointer-events: none;
+    transition: opacity 0.5s ease;
+  }
+  #hint.gone { opacity: 0; }
+
+  #fatal {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    place-items: center; padding: 32px; background: #0a0b0d; color: #e8eaec;
+    font-size: 13px; line-height: 1.7; text-align: center; white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="stats">
+    <div class="title">Whitebox 01</div>
+    <div class="row"><span class="k">fps</span><span class="v" id="s-fps">-</span></div>
+    <div class="row"><span class="k">frame</span><span class="v" id="s-ms">-</span></div>
+    <div class="row"><span class="k">draw calls</span><span class="v" id="s-calls">-</span></div>
+    <div class="row"><span class="k">triangles</span><span class="v" id="s-tris">-</span></div>
+  </div>
+
+  <div id="hint">Tıkla &amp; fare hareketini kilitle &nbsp;·&nbsp; yaw ±80° &nbsp;·&nbsp; R: başını sıfırla &nbsp;·&nbsp; ESC: kilidi bırak</div>
+  <div id="fatal"></div>
+
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    var fatal = document.getElementById('fatal');
+    function die(msg) {
+      fatal.style.display = 'grid';
+      fatal.textContent = msg;
+      throw new Error(msg);
+    }
+    if (!window.THREE) {
+      die('three.js yüklenemedi.\n\nBu dosya CDN bağlantısına ihtiyaç duyar (file:// üzerinden çalışır).\nİnternet bağlantını kontrol et ve sayfayı yenile.');
+    }
+
+    var CFG = {
+      renderer: {
+        fov: 100, near: 0.08, far: 40000,
+        pixelRatio: 1.25, exposure: 0.34, useLegacyLights: true, shadows: true
+      },
+      lens: { distortion: 0.07, vignette: 0.38, vignetteStart: 0.4, vignetteEnd: 1.05 },
+      head: {
+        baseYaw: 180, yaw: 80, pitchMin: -58, pitchMax: 72,
+        sensitivity: 0.0021, height: 1.12, forward: 0.12,
+        startPitch: -9
+      },
+      sun: { azimuth: 120, elevation: 34, intensity: 2.3, distance: 1000 },
+      fill: { intensity: 0.55, distance: 1000 },
+      rim: { azimuth: 30, elevation: 8, intensity: 0.16, distance: 1000 },
+      starlight: { azimuth: 0, elevation: 5, intensity: 0.22, distance: 1000 },
+      ambient: { sky: 0x6d747e, ground: 0x3a3d42, intensity: 0.55 },
+      shadow: { size: 2048, extent: 9, near: 820, far: 1220, bias: -0.0009, normalBias: 0.035 },
+      clay: { roughness: 0.94, metalness: 0.0, envIntensity: 0 },
+      moon: { radius: 30, plateau: 8.5, relief: 0.05, detail: 0.016, lip: 0.9, rimWobble: 0.085, micro: 0.06, microStart: 2.6, microEnd: 4.2 },
+      props: {
+        table: { radius: 0.72, topY: 0.74, thickness: 0.06 },
+        chair: { radius: 1.1, seatY: 0.45, backTop: 0.98, count: 4, seatIndex: 2 }
+      },
+      planets: {
+        home:    { azimuth: -28, elevation: 16, distance: 3000, radius: 1300, seed: 1201, wobble: 0.011 },
+        arid:    { azimuth: 36,  elevation: -1,  distance: 5000, radius: 900,  seed: 2202, wobble: 0.02 },
+        giant:   { azimuth: 10,  elevation: 19,  distance: 6000, radius: 1300, seed: 3203, wobble: 0.005 },
+        moonlet: { azimuth: -42, elevation: 2,   distance: 1200, radius: 84,   seed: 4204, wobble: 0.05 },
+        speck:   { azimuth: -14, elevation: 33,  distance: 2400, radius: 50,   seed: 5205, wobble: 0.07 }
+      },
+      scatter: {
+        seed: 20260926,
+        belt: { count: 160, inner: 1800, outer: 3600, bandHeight: 210, minSize: 6, maxSize: 34, spin: 0.0016 }
+      },
+      sky: {
+        starCount: 12000, starRadius: 90000,
+        bandCount: 22000, bandClumps: 3200, bandRadius: 100000, bandSpread: 0.055,
+        galaxyRadius: 120000, galaxyBulgeCount: 7000, galaxyBulgeDistance: 118000, galaxyBulgeRadius: 30000,
+        sunDistance: 150000, sunRadius: 2600, sunGlowRadius: 15000,
+        pixelRatio: 1
+      }
+    };
+
+    var CLAY = {
+      moon:   0x8d9094,
+      ground: 0x83868b,
+      table:  0x9ba0a5,
+      chair:  0x909499,
+      rock:   0x7c7f84,
+      belt:   0x777a7f,
+      home:   0x8b9096,
+      cloud:  0xc4c8cc,
+      land:   0x70747a,
+      arid:   0x868a8f,
+      crater: 0x6a6e73,
+      giant:  0x93979c,
+      ring:   0x8a8e93,
+      ringB:  0x767a80,
+      ringC:  0xa0a4a9,
+      moonlet: 0x86898e,
+      speck:  0x8f9298
+    };
+
+    function mulberry32(a) {
+      return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        var t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function clamp(x, a, b) { return x < a ? a : (x > b ? b : x); }
+    function smoothstep(a, b, x) { var t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
+    function hash3(x, y, z, seed) {
+      var h = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(z, 1274126177) + Math.imul(seed, 982451653);
+      h = (h ^ (h >>> 13)) | 0;
+      h = Math.imul(h, 1274126177);
+      h = (h ^ (h >>> 16)) >>> 0;
+      return h / 4294967296;
+    }
+    function vnoise3(x, y, z, seed) {
+      var xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+      var xf = x - xi, yf = y - yi, zf = z - zi;
+      var u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+      var c000 = hash3(xi, yi, zi, seed),         c100 = hash3(xi + 1, yi, zi, seed);
+      var c010 = hash3(xi, yi + 1, zi, seed),     c110 = hash3(xi + 1, yi + 1, zi, seed);
+      var c001 = hash3(xi, yi, zi + 1, seed),     c101 = hash3(xi + 1, yi, zi + 1, seed);
+      var c011 = hash3(xi, yi + 1, zi + 1, seed), c111 = hash3(xi + 1, yi + 1, zi + 1, seed);
+      var x00 = c000 + (c100 - c000) * u, x10 = c010 + (c110 - c010) * u;
+      var x01 = c001 + (c101 - c001) * u, x11 = c011 + (c111 - c011) * u;
+      var y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+      return y0 + (y1 - y0) * w;
+    }
+    function fbm3(x, y, z, seed, octaves) {
+      var amp = 0.5, freq = 1, sum = 0, norm = 0;
+      for (var i = 0; i < octaves; i++) {
+        sum += amp * vnoise3(x * freq, y * freq, z * freq, seed + i * 131);
+        norm += amp; amp *= 0.5; freq *= 2.03;
+      }
+      return sum / norm;
+    }
+    function dirFrom(azDeg, elDeg) {
+      var az = azDeg * Math.PI / 180, el = elDeg * Math.PI / 180;
+      return new THREE.Vector3(-Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+    }
+
+    var canvas = document.getElementById('scene');
+    var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CFG.renderer.pixelRatio));
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.setClearColor(0x000000, 1);
+    renderer.autoClear = false;
+    renderer.info.autoReset = false;
+    renderer.useLegacyLights = CFG.renderer.useLegacyLights;
+    renderer.toneMapping = THREE.NoToneMapping;
+    if (CFG.renderer.shadows) {
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+
+    var scene = new THREE.Scene();
+    var skyScene = new THREE.Scene();
+
+    var camera = new THREE.PerspectiveCamera(CFG.renderer.fov, window.innerWidth / window.innerHeight, CFG.renderer.near, CFG.renderer.far);
+    camera.rotation.order = 'YXZ';
+    var skyCamera = new THREE.PerspectiveCamera(CFG.renderer.fov, 1, 10, 400000);
+
+    function wideProjection(cam) {
+      cam.updateProjectionMatrix();
+      var e = cam.projectionMatrix.elements;
+      if (e[0] < 0) e[0] = -e[0];
+      if (e[5] < 0) e[5] = -e[5];
+      cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+      return cam;
+    }
+    wideProjection(camera);
+    wideProjection(skyCamera);
+
+    var PARTS = {
+      moon: null, groundRocks: null, props: null, table: null, chairs: [],
+      planets: null, belt: null, sky: null, stars: null, galaxy: null, sun: null, lights: null,
+      starMaterials: []
+    };
+
+    function clay(color, opts) {
+      opts = opts || {};
+      return new THREE.MeshStandardMaterial({
+        color: color,
+        roughness: opts.roughness !== undefined ? opts.roughness : CFG.clay.roughness,
+        metalness: CFG.clay.metalness,
+        flatShading: !!opts.flatShading,
+        side: opts.side || THREE.FrontSide,
+        transparent: !!opts.transparent,
+        opacity: opts.opacity !== undefined ? opts.opacity : 1,
+        depthWrite: opts.depthWrite !== undefined ? opts.depthWrite : true,
+        envMapIntensity: CFG.clay.envIntensity
+      });
+    }
+    function addMesh(parent, geo, mat, pos) {
+      var m = new THREE.Mesh(geo, mat);
+      if (pos) m.position.copy(pos);
+      parent.add(m);
+      return m;
+    }
+
+    function buildMoon() {
+      var C = CFG.moon;
+      var group = new THREE.Group();
+      group.name = 'moon';
+      var geo = new THREE.SphereGeometry(C.radius, 170, 118);
+      var pos = geo.attributes.position;
+      var v = new THREE.Vector3();
+      var H = Math.sqrt(C.radius * C.radius - C.plateau * C.plateau);
+      var seed = CFG.scatter.seed;
+
+      var harmR = mulberry32(seed);
+      var harm = [];
+      var hk = [2, 3, 5, 7, 11];
+      for (var h = 0; h < hk.length; h++) {
+        harm.push({ k: hk[h], a: C.rimWobble * (0.35 + 0.65 * harmR()) / Math.sqrt(hk.length), ph: harmR() * Math.PI * 2 });
+      }
+      function plateauRadius(theta) {
+        var s = 1;
+        for (var i = 0; i < harm.length; i++) s += harm[i].a * Math.sin(harm[i].k * theta + harm[i].ph);
+        return C.plateau * s;
+      }
+
+      for (var i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        var dir = v.clone().normalize();
+        var nBig = fbm3(dir.x * 2.1 + 11.3, dir.y * 2.1, dir.z * 2.1, seed, 4);
+        var nSmall = fbm3(dir.x * 6.4, dir.y * 6.4 + 3.7, dir.z * 6.4, seed + 977, 3);
+        var r = C.radius * (1 + C.relief * (nBig - 0.5) * 2 + C.detail * (nSmall - 0.5) * 2);
+        v.copy(dir).multiplyScalar(r);
+        var rad = Math.hypot(v.x, v.z);
+        var Pe = plateauRadius(Math.atan2(v.z, v.x));
+        var yThresh = Math.sqrt(Math.max(0.25, r * r - Pe * Pe));
+        var t = smoothstep(yThresh - C.lip, yThresh + C.lip, v.y);
+        var wy = (v.y - H) * (1 - t);
+        wy += (fbm3(v.x * 0.85, 4.2, v.z * 0.85, seed + 313, 3) - 0.5) * C.micro * t
+            * smoothstep(C.microStart, C.microEnd, rad);
+        pos.setXYZ(i, v.x, wy, v.z);
+      }
+      geo.computeVertexNormals();
+      var mesh = addMesh(group, geo, clay(CLAY.moon));
+      mesh.castShadow = CFG.renderer.shadows;
+      mesh.receiveShadow = CFG.renderer.shadows;
+      return group;
+    }
+
+    function buildTable() {
+      var T = CFG.props.table;
+      var group = new THREE.Group();
+      group.name = 'table';
+      var mat = clay(CLAY.table);
+      var top = addMesh(group, new THREE.CylinderGeometry(T.radius, T.radius, T.thickness, 56), mat, new THREE.Vector3(0, T.topY - T.thickness / 2, 0));
+      var skirt = addMesh(group, new THREE.CylinderGeometry(T.radius * 0.94, T.radius * 0.86, 0.05, 56), mat, new THREE.Vector3(0, T.topY - T.thickness - 0.02, 0));
+      var col = addMesh(group, new THREE.CylinderGeometry(0.1, 0.15, T.topY - T.thickness - 0.06, 20), mat, new THREE.Vector3(0, (T.topY - T.thickness) / 2 - 0.01, 0));
+      var base = addMesh(group, new THREE.CylinderGeometry(0.4, 0.5, 0.06, 28), mat, new THREE.Vector3(0, 0.03, 0));
+      var hub = addMesh(group, new THREE.CylinderGeometry(0.26, 0.2, 0.07, 24), mat, new THREE.Vector3(0, 0.1, 0));
+      [top, skirt, col, base, hub].forEach(function (m) { m.castShadow = true; m.receiveShadow = true; });
+      return group;
+    }
+
+    function buildChair() {
+      var C = CFG.props.chair;
+      var group = new THREE.Group();
+      var mat = clay(CLAY.chair);
+      var seat = addMesh(group, new THREE.CylinderGeometry(0.24, 0.23, 0.06, 24), mat, new THREE.Vector3(0, C.seatY, 0));
+      var pad = addMesh(group, new THREE.CylinderGeometry(0.2, 0.19, 0.05, 20), mat, new THREE.Vector3(0, C.seatY + 0.05, 0.01));
+      var backH = C.backTop - C.seatY - 0.02;
+      var back = addMesh(group, new THREE.BoxGeometry(0.44, backH, 0.05), mat, new THREE.Vector3(0, C.seatY + 0.02 + backH / 2, -0.215));
+      back.rotation.x = 0.11;
+      var postL = addMesh(group, new THREE.BoxGeometry(0.05, C.backTop - C.seatY, 0.05), mat, new THREE.Vector3(-0.185, (C.backTop + C.seatY) / 2, -0.222));
+      var postR = addMesh(group, new THREE.BoxGeometry(0.05, C.backTop - C.seatY, 0.05), mat, new THREE.Vector3(0.185, (C.backTop + C.seatY) / 2, -0.222));
+      var parts = [seat, pad, back, postL, postR];
+      var lx = 0.165, lz = 0.165;
+      [[-lx, -lz], [lx, -lz], [-lx, lz], [lx, lz]].forEach(function (p) {
+        var leg = addMesh(group, new THREE.CylinderGeometry(0.022, 0.028, C.seatY, 10), mat, new THREE.Vector3(p[0], C.seatY / 2, p[1]));
+        parts.push(leg);
+      });
+      var stretcher = addMesh(group, new THREE.BoxGeometry(0.36, 0.03, 0.03), mat, new THREE.Vector3(0, 0.16, 0.165));
+      parts.push(stretcher);
+      parts.forEach(function (m) { m.castShadow = true; m.receiveShadow = true; });
+      return group;
+    }
+
+    function buildProps() {
+      var C = CFG.props.chair;
+      var group = new THREE.Group();
+      group.name = 'props';
+      PARTS.table = buildTable();
+      group.add(PARTS.table);
+      for (var i = 0; i < C.count; i++) {
+        var a = (i / C.count) * Math.PI * 2;
+        var chair = buildChair();
+        chair.position.set(Math.sin(a) * C.radius, 0, Math.cos(a) * C.radius);
+        chair.rotation.y = a + Math.PI;
+        chair.name = 'chair-' + i;
+        group.add(chair);
+        PARTS.chairs.push(chair);
+      }
+      return group;
+    }
+
+    function displaceSphere(geo, seed, amount, freq, octaves) {
+      var pos = geo.attributes.position;
+      var v = new THREE.Vector3();
+      for (var i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        var len = v.length() || 1;
+        var dir = v.clone().divideScalar(len);
+        var n = fbm3(dir.x * freq + 5.1, dir.y * freq, dir.z * freq, seed, octaves);
+        pos.setXYZ(i, dir.x * (len + amount * (n - 0.5) * 2), dir.y * (len + amount * (n - 0.5) * 2), dir.z * (len + amount * (n - 0.5) * 2));
+      }
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    function placeAt(obj, azDeg, elDeg, dist) {
+      obj.position.copy(dirFrom(azDeg, elDeg).multiplyScalar(dist));
+      return obj;
+    }
+
+    function buildHome() {
+      var P = CFG.planets.home;
+      var group = new THREE.Group();
+      group.name = 'planet-home';
+      var body = new THREE.Mesh(
+        displaceSphere(new THREE.SphereGeometry(P.radius, 120, 84), P.seed, P.radius * P.wobble, 3.4, 5),
+        clay(CLAY.home)
+      );
+      group.add(body);
+
+      var landRnd = mulberry32(P.seed + 7);
+      var landMat = clay(CLAY.land);
+      var landCount = 9;
+      for (var i = 0; i < landCount; i++) {
+        var phi = landRnd() * Math.PI * 2;
+        var theta = 0.25 + landRnd() * (Math.PI - 0.5);
+        var w = 0.24 + landRnd() * 0.5;
+        var h = 0.1 + landRnd() * 0.22;
+        var r = P.radius * (1.0016 + landRnd() * 0.0022);
+        var patch = new THREE.Mesh(new THREE.SphereGeometry(r, 22, 14, phi, w, theta, h), landMat);
+        group.add(patch);
+      }
+
+      var cloud = new THREE.Mesh(new THREE.SphereGeometry(P.radius * 1.017, 96, 64), clay(CLAY.cloud, { transparent: true, opacity: 0.2, depthWrite: false }));
+      group.add(cloud);
+      return group;
+    }
+
+    function buildArid() {
+      var P = CFG.planets.arid;
+      var group = new THREE.Group();
+      group.name = 'planet-arid';
+      group.add(new THREE.Mesh(
+        displaceSphere(new THREE.SphereGeometry(P.radius, 110, 76), P.seed, P.radius * P.wobble, 4.2, 5),
+        clay(CLAY.arid)
+      ));
+
+      var craterMat = clay(CLAY.crater);
+      var rimMat = clay(CLAY.crater, { roughness: 0.98 });
+      var cr = mulberry32(P.seed + 3);
+      var up = new THREE.Vector3(0, 0, 1);
+      for (var i = 0; i < 7; i++) {
+        var phi = cr() * Math.PI * 2;
+        var theta = 0.4 + cr() * (Math.PI - 0.8);
+        var d = new THREE.Vector3(Math.sin(theta) * Math.sin(phi), Math.cos(theta), Math.sin(theta) * Math.cos(phi));
+        var size = P.radius * (0.09 + cr() * 0.14);
+        var span = size / P.radius * 1.7;
+        var patch = new THREE.Mesh(new THREE.SphereGeometry(P.radius * 0.999, 18, 10, phi, span, theta, span), craterMat);
+        group.add(patch);
+        if (i < 3) {
+          var ring = new THREE.Mesh(new THREE.TorusGeometry(size, size * 0.14, 6, 26), rimMat);
+          ring.position.copy(d).multiplyScalar(P.radius);
+          ring.quaternion.setFromUnitVectors(up, d);
+          group.add(ring);
+        }
+      }
+      return group;
+    }
+
+    function buildGiant() {
+      var P = CFG.planets.giant;
+      var group = new THREE.Group();
+      group.name = 'planet-giant';
+      group.add(new THREE.Mesh(
+        displaceSphere(new THREE.SphereGeometry(P.radius, 128, 88), P.seed, P.radius * P.wobble, 2.6, 4),
+        clay(CLAY.giant)
+      ));
+
+      var ringHolder = new THREE.Group();
+      ringHolder.name = 'giant-rings';
+      var bands = [
+        { inner: 1.28, outer: 1.62, color: CLAY.ring, opacity: 0.92 },
+        { inner: 1.7, outer: 1.86, color: CLAY.ringB, opacity: 0.85 },
+        { inner: 1.94, outer: 2.2, color: CLAY.ringC, opacity: 0.75 }
+      ];
+      bands.forEach(function (b) {
+        var g = new THREE.RingGeometry(P.radius * b.inner, P.radius * b.outer, 128, 2);
+        var m = new THREE.Mesh(g, clay(b.color, { side: THREE.DoubleSide, transparent: true, opacity: b.opacity, depthWrite: false }));
+        ringHolder.add(m);
+      });
+      ringHolder.rotation.set(-0.38, 0.25, 0.1);
+      group.add(ringHolder);
+      PARTS.giantRings = ringHolder;
+      return group;
+    }
+
+    function buildMoonlet() {
+      var P = CFG.planets.moonlet;
+      var group = new THREE.Group();
+      group.name = 'planet-moonlet';
+      var lumps = [
+        { r: 1.0, o: [0, 0, 0], seed: P.seed },
+        { r: 0.46, o: [0.72, 0.24, 0.38], seed: P.seed + 5 },
+        { r: 0.34, o: [-0.58, -0.3, -0.5], seed: P.seed + 9 },
+        { r: 0.26, o: [0.1, 0.62, -0.66], seed: P.seed + 13 }
+      ];
+      lumps.forEach(function (l) {
+        var R = P.radius * l.r;
+        var mesh = new THREE.Mesh(displaceSphere(new THREE.SphereGeometry(R, 54, 38), l.seed, R * 0.09, 5.2, 4), clay(CLAY.moonlet));
+        mesh.position.set(l.o[0] * P.radius, l.o[1] * P.radius, l.o[2] * P.radius);
+        group.add(mesh);
+      });
+      return group;
+    }
+
+    function buildSpeck() {
+      var P = CFG.planets.speck;
+      var mesh = new THREE.Mesh(displaceSphere(new THREE.SphereGeometry(P.radius, 40, 28), P.seed, P.radius * P.wobble, 6, 4), clay(CLAY.speck));
+      mesh.name = 'planet-speck';
+      return mesh;
+    }
+
+    function buildPlanets() {
+      var group = new THREE.Group();
+      group.name = 'planets';
+      var home = buildHome();
+      var arid = buildArid();
+      var giant = buildGiant();
+      var moonlet = buildMoonlet();
+      var speck = buildSpeck();
+      placeAt(home, CFG.planets.home.azimuth, CFG.planets.home.elevation, CFG.planets.home.distance);
+      placeAt(arid, CFG.planets.arid.azimuth, CFG.planets.arid.elevation, CFG.planets.arid.distance);
+      placeAt(giant, CFG.planets.giant.azimuth, CFG.planets.giant.elevation, CFG.planets.giant.distance);
+      placeAt(moonlet, CFG.planets.moonlet.azimuth, CFG.planets.moonlet.elevation, CFG.planets.moonlet.distance);
+      placeAt(speck, CFG.planets.speck.azimuth, CFG.planets.speck.elevation, CFG.planets.speck.distance);
+      home.rotation.y = 0.7; arid.rotation.y = 2.1; giant.rotation.y = 4.4; moonlet.rotation.y = 1.2;
+      PARTS.planets = { home: home, arid: arid, giant: giant, moonlet: moonlet, speck: speck };
+      group.add(home, arid, giant, moonlet, speck);
+      return group;
+    }
+
+    function buildBelt() {
+      var B = CFG.scatter.belt;
+      var group = new THREE.Group();
+      group.name = 'meteor-rocks';
+      var geo = new THREE.IcosahedronGeometry(1, 0);
+      var mat = clay(CLAY.belt, { flatShading: true });
+      var mesh = new THREE.InstancedMesh(geo, mat, B.count);
+      mesh.name = 'belt-rocks';
+      mesh.frustumCulled = false;
+      var r = mulberry32(CFG.scatter.seed + 41);
+      var m = new THREE.Matrix4();
+      var q = new THREE.Quaternion();
+      var e = new THREE.Euler();
+      var p = new THREE.Vector3();
+      var s = new THREE.Vector3();
+      for (var i = 0; i < B.count; i++) {
+        var t = r();
+        var dist = B.inner + (B.outer - B.inner) * Math.pow(t, 0.7);
+        var ang = r() * Math.PI * 2;
+        var y = (r() - 0.5) * 2 * B.bandHeight * (0.35 + 0.65 * r());
+        p.set(Math.sin(ang) * dist, y, Math.cos(ang) * dist);
+        e.set(r() * Math.PI * 2, r() * Math.PI * 2, r() * Math.PI * 2);
+        q.setFromEuler(e);
+        var sc = B.minSize + (B.maxSize - B.minSize) * Math.pow(r(), 2.2);
+        s.set(sc * (0.7 + 0.6 * r()), sc * (0.7 + 0.6 * r()), sc * (0.7 + 0.6 * r()));
+        m.compose(p, q, s);
+        mesh.setMatrixAt(i, m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      group.add(mesh);
+      group.rotation.x = 0.16;
+      group.rotation.z = -0.09;
+      PARTS.belt = group;
+      return group;
+    }
+
+    function starMaterial(sizeScale, brightness) {
+      var m = new THREE.ShaderMaterial({
+        uniforms: {
+          uSize: { value: sizeScale * CFG.sky.pixelRatio },
+          uBright: { value: brightness }
+        },
+        vertexShader: [
+          'attribute float aSize;',
+          'attribute float aBright;',
+          'varying float vB;',
+          'uniform float uSize;',
+          'void main() {',
+          '  vB = aBright;',
+          '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+          '  gl_PointSize = uSize * aSize;',
+          '}'
+        ].join('\n'),
+        fragmentShader: [
+          'varying float vB;',
+          'uniform float uBright;',
+          'void main() {',
+          '  float d = length(gl_PointCoord - vec2(0.5));',
+          '  float a = smoothstep(0.5, 0.06, d);',
+          '  float v = vB * uBright;',
+          '  gl_FragColor = vec4(vec3(1.0), a * v);',
+          '}'
+        ].join('\n'),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      });
+      m.userData.baseSize = sizeScale;
+      return m;
+    }
+
+    function buildSky() {
+      var S = CFG.sky;
+      var group = new THREE.Group();
+      group.name = 'sky';
+      var r = mulberry32(CFG.scatter.seed + 777);
+
+      var positions = new Float32Array(S.starCount * 3);
+      var sizes = new Float32Array(S.starCount);
+      var brights = new Float32Array(S.starCount);
+      for (var i = 0; i < S.starCount; i++) {
+        var u = r() * 2 - 1, th = r() * Math.PI * 2;
+        var sr = Math.sqrt(1 - u * u);
+        var rad = S.starRadius * (0.9 + 0.2 * r());
+        positions[i * 3] = rad * sr * Math.cos(th);
+        positions[i * 3 + 1] = rad * u;
+        positions[i * 3 + 2] = rad * sr * Math.sin(th);
+        var mag = Math.pow(r(), 2.6);
+        sizes[i] = 1.0 + mag * 3.4;
+        brights[i] = 0.28 + mag * 0.9;
+      }
+      var starGeo = new THREE.BufferGeometry();
+      starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      starGeo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+      starGeo.setAttribute('aBright', new THREE.BufferAttribute(brights, 1));
+      var stars = new THREE.Points(starGeo, starMaterial(0.9, 1.0));
+      stars.name = 'stars';
+      stars.frustumCulled = false;
+      group.add(stars);
+      PARTS.stars = stars;
+
+      var bandCount = S.bandCount + S.bandClumps;
+      var bPos = new Float32Array(bandCount * 3);
+      var bSize = new Float32Array(bandCount);
+      var bBright = new Float32Array(bandCount);
+      var bandTilt = new THREE.Euler(0.42, 0.0, 0.62, 'YXZ');
+      var v = new THREE.Vector3();
+      for (var j = 0; j < bandCount; j++) {
+        var isClump = j >= S.bandCount;
+        var th2 = r() * Math.PI * 2;
+        var spread = isClump ? S.bandSpread * 0.22 : S.bandSpread;
+        var off = (r() + r() + r() - 1.5) * 2 * spread;
+        v.set(Math.cos(off) * Math.cos(th2), Math.sin(off), Math.cos(off) * Math.sin(th2));
+        v.applyEuler(bandTilt);
+        var rad2 = S.bandRadius * (0.85 + 0.3 * r());
+        bPos[j * 3] = v.x * rad2;
+        bPos[j * 3 + 1] = v.y * rad2;
+        bPos[j * 3 + 2] = v.z * rad2;
+        var mag2 = Math.pow(r(), 3.0);
+        bSize[j] = 1.0 + mag2 * 2.6;
+        bBright[j] = 0.1 + mag2 * 0.55;
+      }
+      var bandGeo = new THREE.BufferGeometry();
+      bandGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
+      bandGeo.setAttribute('aSize', new THREE.BufferAttribute(bSize, 1));
+      bandGeo.setAttribute('aBright', new THREE.BufferAttribute(bBright, 1));
+      var band = new THREE.Points(bandGeo, starMaterial(0.8, 0.6));
+      band.name = 'milky-way-band';
+      band.frustumCulled = false;
+      group.add(band);
+      PARTS.band = band;
+
+      var galaxy = new THREE.Group();
+      galaxy.name = 'galaxy';
+      var diskGeo = new THREE.CircleGeometry(S.galaxyRadius, 128);
+      var diskPos = diskGeo.attributes.position;
+      for (var d = 0; d < diskPos.count; d++) {
+        var dx = diskPos.getX(d), dy = diskPos.getY(d);
+        var len = Math.hypot(dx, dy);
+        if (len > 0.0001) {
+          var fall = 1 - 0.75 * Math.pow(len / S.galaxyRadius, 1.6);
+          var n = fbm3(dx * 0.00004, dy * 0.00004, 0.0, 4242, 4);
+          diskPos.setXY(d, dx * fall * (0.85 + 0.3 * n), dy * fall * (0.85 + 0.3 * n));
+        }
+      }
+      diskGeo.computeVertexNormals();
+      var disk = new THREE.Mesh(diskGeo, new THREE.MeshBasicMaterial({
+        color: 0x8f95a0, transparent: true, opacity: 0.07,
+        blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, side: THREE.DoubleSide
+      }));
+      disk.position.set(0, 0, -S.galaxyBulgeDistance);
+      disk.rotation.set(0.1, 0.0, 0.18);
+      galaxy.add(disk);
+
+      var gCount = S.galaxyBulgeCount;
+      var gPos = new Float32Array(gCount * 3);
+      var gSize = new Float32Array(gCount);
+      var gBright = new Float32Array(gCount);
+      for (var b = 0; b < gCount; b++) {
+        var u2 = r() * 2 - 1, th3 = r() * Math.PI * 2;
+        var sr2 = Math.sqrt(1 - u2 * u2);
+        var rad3 = S.galaxyBulgeRadius * (0.15 + 0.85 * Math.pow(r(), 0.6));
+        var px = rad3 * sr2 * Math.cos(th3);
+        var py = rad3 * sr2 * Math.sin(th3) * 0.55;
+        var pz = rad3 * u2 * 0.7;
+        var p3 = new THREE.Vector3(px, py, pz).applyEuler(bandTilt);
+        gPos[b * 3] = p3.x;
+        gPos[b * 3 + 1] = p3.y;
+        gPos[b * 3 + 2] = p3.z - S.galaxyBulgeDistance;
+        var mag3 = Math.pow(r(), 2.4);
+        gSize[b] = 1.0 + mag3 * 2.2;
+        gBright[b] = 0.12 + mag3 * 0.5;
+      }
+      var gGeo = new THREE.BufferGeometry();
+      gGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
+      gGeo.setAttribute('aSize', new THREE.BufferAttribute(gSize, 1));
+      gGeo.setAttribute('aBright', new THREE.BufferAttribute(gBright, 1));
+      var bulge = new THREE.Points(gGeo, starMaterial(0.85, 0.55));
+      bulge.name = 'galaxy-bulge';
+      bulge.frustumCulled = false;
+      galaxy.add(bulge);
+      group.add(galaxy);
+      PARTS.galaxy = galaxy;
+      PARTS.starMaterials = [stars.material, band.material, bulge.material];
+
+      var sunHolder = new THREE.Group();
+      sunHolder.name = 'sun';
+      var sunDir = dirFrom(CFG.sun.azimuth, CFG.sun.elevation);
+      var sunDisk = new THREE.Mesh(new THREE.CircleGeometry(S.sunRadius, 48), new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false
+      }));
+      sunDisk.position.copy(sunDir).multiplyScalar(S.sunDistance);
+      sunDisk.lookAt(0, 0, 0);
+      sunHolder.add(sunDisk);
+
+      var sunGlow = new THREE.Mesh(new THREE.CircleGeometry(S.sunGlowRadius, 64), new THREE.ShaderMaterial({
+        uniforms: { uColor: { value: new THREE.Color(0xdfe3e8) } },
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: [
+          'varying vec2 vUv; uniform vec3 uColor;',
+          'void main(){',
+          '  float d = length(vUv - 0.5) * 2.0;',
+          '  float a = pow(clamp(1.0 - d, 0.0, 1.0), 3.0) * 0.55;',
+          '  gl_FragColor = vec4(uColor, a);',
+          '}'
+        ].join('\n'),
+        transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending
+      }));
+      sunGlow.position.copy(sunDir).multiplyScalar(S.sunDistance);
+      sunGlow.lookAt(0, 0, 0);
+      sunHolder.add(sunGlow);
+      group.add(sunHolder);
+      PARTS.sun = sunHolder;
+
+      PARTS.sky = group;
+      return group;
+    }
+
+    function buildLights() {
+      var group = new THREE.Group();
+      group.name = 'lights';
+
+      var sunDir = dirFrom(CFG.sun.azimuth, CFG.sun.elevation);
+      var sun = new THREE.DirectionalLight(0xffffff, CFG.sun.intensity);
+      sun.position.copy(sunDir).multiplyScalar(CFG.sun.distance);
+      sun.target.position.set(0, 0, 0);
+      group.add(sun, sun.target);
+      if (CFG.renderer.shadows) {
+        sun.castShadow = true;
+        var S = CFG.shadow;
+        sun.shadow.mapSize.set(S.size, S.size);
+        sun.shadow.camera.left = -S.extent;
+        sun.shadow.camera.right = S.extent;
+        sun.shadow.camera.top = S.extent;
+        sun.shadow.camera.bottom = -S.extent;
+        sun.shadow.camera.near = S.near;
+        sun.shadow.camera.far = S.far;
+        sun.shadow.bias = S.bias;
+        sun.shadow.normalBias = S.normalBias;
+        sun.shadow.camera.updateProjectionMatrix();
+      }
+      PARTS.sunLight = sun;
+
+      var homeDir = dirFrom(CFG.planets.home.azimuth, CFG.planets.home.elevation);
+      var fill = new THREE.DirectionalLight(0xc2cad4, CFG.fill.intensity);
+      fill.position.copy(homeDir).multiplyScalar(CFG.fill.distance);
+      fill.target.position.set(0, 0, 0);
+      group.add(fill, fill.target);
+      PARTS.fillLight = fill;
+
+      var rimDir = dirFrom(CFG.rim.azimuth, CFG.rim.elevation);
+      var rim = new THREE.DirectionalLight(0x9aa4b0, CFG.rim.intensity);
+      rim.position.copy(rimDir).multiplyScalar(CFG.rim.distance);
+      rim.target.position.set(0, 0, 0);
+      group.add(rim, rim.target);
+      PARTS.rimLight = rim;
+
+      var hemi = new THREE.HemisphereLight(CFG.ambient.sky, CFG.ambient.ground, CFG.ambient.intensity);
+      group.add(hemi);
+      PARTS.hemi = hemi;
+
+      var starDir = dirFrom(CFG.starlight.azimuth, CFG.starlight.elevation);
+      var starlight = new THREE.DirectionalLight(0xb8c0cc, CFG.starlight.intensity);
+      starlight.position.copy(starDir).multiplyScalar(CFG.starlight.distance);
+      starlight.target.position.set(0, 0, 0);
+      group.add(starlight, starlight.target);
+      PARTS.starlight = starlight;
+      return group;
+    }
+
+    function buildGroundRocks() {
+      var group = new THREE.Group();
+      group.name = 'ground-rocks';
+      PARTS.groundRocks = group;
+      return group;
+    }
+
+    PARTS.moon = buildMoon();
+    PARTS.groundRocks = buildGroundRocks();
+    PARTS.props = buildProps();
+    scene.add(PARTS.moon, PARTS.groundRocks, PARTS.props, buildPlanets(), buildBelt(), buildLights());
+    skyScene.add(buildSky());
+
+    scene.traverse(function (o) { o.frustumCulled = false; });
+    skyScene.traverse(function (o) { o.frustumCulled = false; });
+
+    var head = { yaw: 0, pitch: CFG.head.startPitch * Math.PI / 180, dragging: false };
+    var chair = PARTS.chairs[CFG.props.chair.seatIndex];
+    camera.position.set(
+      chair.position.x,
+      CFG.head.height,
+      chair.position.z - CFG.head.forward
+    );
+    scene.add(camera);
+
+    function applyHead() {
+      head.yaw = clamp(head.yaw, -CFG.head.yaw * Math.PI / 180, CFG.head.yaw * Math.PI / 180);
+      head.pitch = clamp(head.pitch, CFG.head.pitchMin * Math.PI / 180, CFG.head.pitchMax * Math.PI / 180);
+      camera.rotation.set(head.pitch, CFG.head.baseYaw * Math.PI / 180 + head.yaw, 0, 'YXZ');
+    }
+    function look(dx, dy) {
+      head.yaw -= dx * CFG.head.sensitivity;
+      head.pitch -= dy * CFG.head.sensitivity;
+      applyHead();
+    }
+    function resetHead() {
+      head.yaw = 0;
+      head.pitch = CFG.head.startPitch * Math.PI / 180;
+      applyHead();
+    }
+    applyHead();
+
+    var hint = document.getElementById('hint');
+    function requestLock() {
+      if (document.pointerLockElement === canvas) return;
+      var p = canvas.requestPointerLock && canvas.requestPointerLock();
+      if (p && p.catch) p.catch(function () {});
+    }
+    canvas.addEventListener('mousedown', function (e) {
+      if (document.pointerLockElement !== canvas) {
+        head.dragging = true;
+        requestLock();
+      }
+      e.preventDefault();
+    });
+    window.addEventListener('mouseup', function () { head.dragging = false; });
+    document.addEventListener('mousemove', function (e) {
+      if (document.pointerLockElement === canvas || head.dragging) look(e.movementX || 0, e.movementY || 0);
+    });
+    document.addEventListener('pointerlockchange', function () {
+      hint.classList.toggle('gone', document.pointerLockElement === canvas);
+    });
+    document.addEventListener('pointerlockerror', function () { hint.classList.remove('gone'); });
+    window.addEventListener('keydown', function (e) {
+      if (e.code === 'KeyR') resetHead();
+    });
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    var msaa = renderer.capabilities.isWebGL2 ? 4 : 0;
+    var rt = new THREE.WebGLRenderTarget(2, 2, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      type: THREE.HalfFloatType,
+      depthBuffer: true,
+      stencilBuffer: false,
+      samples: msaa
+    });
+    rt.texture.generateMipmaps = false;
+
+    function linearToSRGB(c) {
+      return c < 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1.0 / 2.4) - 0.055;
+    }
+    var lensMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        tColor: { value: rt.texture },
+        uDistortion: { value: CFG.lens.distortion },
+        uVignette: { value: CFG.lens.vignette },
+        uVigStart: { value: CFG.lens.vignetteStart },
+        uVigEnd: { value: CFG.lens.vignetteEnd },
+        uAspect: { value: 1 },
+        uExposure: { value: CFG.renderer.exposure }
+      },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: [
+        'uniform sampler2D tColor;',
+        'uniform float uDistortion, uVignette, uVigStart, uVigEnd, uAspect, uExposure;',
+        'varying vec2 vUv;',
+        'vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }',
+        'float toSRGB(float c){ return c < 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }',
+        'void main(){',
+        '  vec2 c = vUv - 0.5;',
+        '  vec2 d = vec2(c.x * uAspect, c.y);',
+        '  float r = length(d);',
+        '  float k = 1.0 + uDistortion * r * r;',
+        '  vec2 du = d * k;',
+        '  vec2 suv = 0.5 + vec2(du.x / uAspect, du.y);',
+        '  vec3 col = texture2D(tColor, clamp(suv, vec2(0.0005), vec2(0.9995))).rgb * uExposure;',
+        '  col = aces(col);',
+        '  col = vec3(toSRGB(col.r), toSRGB(col.g), toSRGB(col.b));',
+        '  float v = 1.0 - uVignette * smoothstep(uVigStart, uVigEnd, r);',
+        '  gl_FragColor = vec4(col * v, 1.0);',
+        '}'
+      ].join('\n'),
+      depthTest: false,
+      depthWrite: false
+    });
+    var lensScene = new THREE.Scene();
+    var lensCamera = new THREE.Camera();
+    var lensQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), lensMaterial);
+    lensQuad.frustumCulled = false;
+    lensScene.add(lensQuad);
+
+    function resize() {
+      var w = window.innerWidth, h = window.innerHeight;
+      var dpr = Math.min(window.devicePixelRatio || 1, CFG.renderer.pixelRatio);
+      renderer.setPixelRatio(dpr);
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      wideProjection(camera);
+      skyCamera.aspect = w / h;
+      wideProjection(skyCamera);
+      rt.setSize(Math.max(2, Math.floor(w * dpr)), Math.max(2, Math.floor(h * dpr)));
+      lensMaterial.uniforms.uAspect.value = w / h;
+      for (var si = 0; si < PARTS.starMaterials.length; si++) {
+        PARTS.starMaterials[si].uniforms.uSize.value = PARTS.starMaterials[si].userData.baseSize * dpr;
+      }
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    var sFps = document.getElementById('s-fps');
+    var sMs = document.getElementById('s-ms');
+    var sCalls = document.getElementById('s-calls');
+    var sTris = document.getElementById('s-tris');
+
+    var last = performance.now();
+    var frames = 0, statTime = 0;
+    var beltSpin = 0;
+
+    function loop() {
+      requestAnimationFrame(loop);
+      var now = performance.now();
+      var frameMs = now - last;
+      last = now;
+      frames++; statTime += frameMs;
+
+      beltSpin += CFG.scatter.belt.spin * frameMs * 0.001;
+      PARTS.belt.rotation.y = beltSpin;
+
+      camera.updateMatrixWorld();
+      skyCamera.position.copy(camera.position);
+      skyCamera.quaternion.copy(camera.quaternion);
+      skyCamera.updateMatrixWorld();
+
+      renderer.setRenderTarget(rt);
+      renderer.info.reset();
+      renderer.clear(true, true, true);
+      renderer.render(skyScene, skyCamera);
+      renderer.clearDepth();
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      renderer.clear(true, true, true);
+      renderer.render(lensScene, lensCamera);
+
+      if (statTime >= 250) {
+        var info = renderer.info.render;
+        sFps.textContent = (frames * 1000 / statTime).toFixed(0);
+        sMs.textContent = (statTime / frames).toFixed(2) + ' ms';
+        sCalls.textContent = String(info.calls);
+        sTris.textContent = info.triangles.toLocaleString('tr-TR');
+        frames = 0; statTime = 0;
+      }
+    }
+    loop();
+
+    window.APP = { THREE: THREE, CFG: CFG, CLAY: CLAY, PARTS: PARTS, renderer: renderer, scene: scene, skyScene: skyScene, camera: camera, head: head, resetHead: resetHead, look: look, rng: mulberry32, noise: fbm3 };
+  })();
+  </script>
+</body>
+</html>
